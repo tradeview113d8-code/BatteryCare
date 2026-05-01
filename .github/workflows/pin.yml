@@ -1,0 +1,736 @@
+name: BatteryCare Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Create project structure and all source files
+        run: |
+          mkdir -p app/src/main/java/com/example/batterycare
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/layout
+          mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/res/mipmap-hdpi
+          mkdir -p app/src/main/assets
+          mkdir -p gradle/wrapper
+
+          # === BUILD FILES ===
+          cat > build.gradle.kts << 'EOF'
+          plugins {
+              id("com.android.application") version "8.2.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+              id("com.google.devtools.ksp") version "1.9.22-1.0.17" apply false
+          }
+          EOF
+
+          cat > settings.gradle.kts << 'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "BatteryCare"
+          include(":app")
+          EOF
+
+          cat > gradle.properties << 'EOF'
+          android.useAndroidX=true
+          android.enableJetifier=true
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          EOF
+
+          cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.4-bin.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+
+          cat > app/build.gradle.kts << 'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("com.google.devtools.ksp")
+          }
+          android {
+              namespace = "com.example.batterycare"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.example.batterycare"
+                  minSdk = 28
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+              buildFeatures { viewBinding = true }
+          }
+          dependencies {
+              implementation("androidx.core:core-ktx:1.12.0")
+              implementation("androidx.appcompat:appcompat:1.6.1")
+              implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0")
+              implementation("androidx.lifecycle:lifecycle-livedata-ktx:2.7.0")
+              implementation("androidx.room:room-runtime:2.6.1")
+              implementation("androidx.room:room-ktx:2.6.1")
+              implementation("com.google.android.material:material:1.11.0")
+              ksp("androidx.room:room-compiler:2.6.1")
+          }
+          EOF
+
+          # Download Gradle wrapper jar and script
+          curl -sL "https://raw.githubusercontent.com/gradle/gradle/v8.4.0/gradle/wrapper/gradle-wrapper.jar" -o gradle/wrapper/gradle-wrapper.jar
+          curl -sL "https://raw.githubusercontent.com/gradle/gradle/v8.4.0/gradlew" -o gradlew
+          chmod +x gradlew
+
+          # === ANDROID MANIFEST ===
+          cat > app/src/main/AndroidManifest.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+              <uses-permission android:name="android.permission.BATTERY_STATS" tools:ignore="ProtectedPermissions" />
+              <application
+                  android:name=".BatteryApp"
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.BatteryCare"
+                  android:exported="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:theme="@style/Theme.BatteryCare">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".BatteryMonitorService"
+                      android:enabled="true"
+                      android:exported="false"
+                      android:foregroundServiceType="dataSync" />
+                  <receiver
+                      android:name=".BatteryReceiver"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BATTERY_CHANGED" />
+                      </intent-filter>
+                  </receiver>
+              </application>
+          </manifest>
+          EOF
+
+          # === RESOURCES ===
+          cat > app/src/main/res/values/strings.xml << 'EOF'
+          <resources>
+              <string name="app_name">BatteryCare</string>
+              <string name="info_voltage">Điện áp pin hiện tại. Bình thường từ 3.7V - 4.4V. Cao hơn có thể gây nguy hiểm.</string>
+              <string name="info_temperature">Nhiệt độ pin. Trên 45°C là quá nhiệt, cần rút sạc.</string>
+              <string name="info_health">Tình trạng pin. Nếu không còn Tốt, bạn nên thay pin.</string>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/values/styles.xml << 'EOF'
+          <resources>
+              <style name="Theme.BatteryCare" parent="Theme.AppCompat.DayNight.NoActionBar">
+                  <item name="android:statusBarColor">@android:color/transparent</item>
+                  <item name="android:navigationBarColor">@android:color/transparent</item>
+                  <item name="android:windowFullscreen">true</item>
+              </style>
+              <style name="BigText">
+                  <item name="android:textColor">#00FF00</item>
+                  <item name="android:fontFamily">sans-serif-medium</item>
+                  <item name="android:textAlignment">center</item>
+              </style>
+              <style name="MetricText">
+                  <item name="android:textColor">#EEEEEE</item>
+                  <item name="android:textSize">18sp</item>
+                  <item name="android:padding">8dp</item>
+                  <item name="android:clickable">true</item>
+                  <item name="android:focusable">true</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_battery.xml << 'EOF'
+          <vector android:height="24dp" android:width="24dp" android:viewportHeight="24" android:viewportWidth="24" xmlns:android="http://schemas.android.com/apk/res/android">
+              <path android:fillColor="#FFFFFF" android:pathData="M15.67,4H14V2h-4v2H8.33C7.596,4 7,4.596 7,5.33v15.33C7,21.4 7.596,22 8.33,22h7.33c0.74,0 1.34,-0.6 1.34,-1.33V5.33C17,4.6 16.4,4 15.67,4z"/>
+          </vector>
+          EOF
+
+          # Placeholder launcher icon (vector mipmap)
+          cat > app/src/main/res/mipmap-hdpi/ic_launcher.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background"/>
+              <foreground android:drawable="@drawable/ic_battery"/>
+          </adaptive-icon>
+          EOF
+
+          # Color for launcher background
+          cat > app/src/main/res/values/colors.xml << 'EOF'
+          <resources>
+              <color name="ic_launcher_background">#1A1A1A</color>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/layout/activity_main.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:app="http://schemas.android.com/apk/res-auto"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:background="#121212">
+              <TextView
+                  android:id="@+id/textLevel"
+                  style="@style/BigText"
+                  android:layout_marginTop="32dp"
+                  app:layout_constraintTop_toTopOf="parent"
+                  app:layout_constraintStart_toStartOf="parent"
+                  app:layout_constraintEnd_toEndOf="parent"
+                  android:text="--%"
+                  android:textSize="72sp" />
+              <TextView
+                  android:id="@+id/textVoltage"
+                  style="@style/MetricText"
+                  android:text="V: --V"
+                  app:layout_constraintTop_toBottomOf="@id/textLevel"
+                  app:layout_constraintStart_toStartOf="parent"
+                  app:layout_constraintEnd_toStartOf="@id/textTemp" />
+              <TextView
+                  android:id="@+id/textTemp"
+                  style="@style/MetricText"
+                  android:text="Nhiệt độ: --°C"
+                  app:layout_constraintTop_toTopOf="@id/textVoltage"
+                  app:layout_constraintStart_toEndOf="@id/textVoltage"
+                  app:layout_constraintEnd_toEndOf="parent" />
+              <TextView
+                  android:id="@+id/textHealth"
+                  style="@style/MetricText"
+                  android:text="--"
+                  app:layout_constraintTop_toBottomOf="@id/textVoltage"
+                  app:layout_constraintStart_toStartOf="parent"
+                  app:layout_constraintEnd_toEndOf="parent"
+                  android:textStyle="bold" />
+              <com.example.batterycare.BatteryChartView
+                  android:id="@+id/chartView"
+                  android:layout_width="0dp"
+                  android:layout_height="0dp"
+                  app:layout_constraintTop_toBottomOf="@id/textHealth"
+                  app:layout_constraintBottom_toTopOf="@id/textDiagnosis"
+                  app:layout_constraintStart_toStartOf="parent"
+                  app:layout_constraintEnd_toEndOf="parent"
+                  android:layout_margin="16dp" />
+              <TextView
+                  android:id="@+id/textDiagnosis"
+                  style="@style/MetricText"
+                  android:text="Chẩn đoán..."
+                  android:padding="16dp"
+                  app:layout_constraintBottom_toBottomOf="parent"
+                  app:layout_constraintStart_toStartOf="parent"
+                  app:layout_constraintEnd_toEndOf="parent" />
+          </androidx.constraintlayout.widget.ConstraintLayout>
+          EOF
+
+          cat > app/src/main/res/layout/dialog_info.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:orientation="vertical"
+              android:padding="24dp"
+              android:background="#1E1E1E">
+              <TextView
+                  android:id="@+id/textTitle"
+                  android:textColor="#FFFFFF"
+                  android:textSize="20sp"
+                  android:textStyle="bold"
+                  android:layout_marginBottom="12dp" />
+              <TextView
+                  android:id="@+id/textMessage"
+                  android:textColor="#CCCCCC"
+                  android:textSize="16sp"
+                  android:layout_marginBottom="16dp" />
+              <TextView
+                  android:id="@+id/buttonClose"
+                  android:text="Đóng"
+                  android:textColor="#00FF00"
+                  android:textSize="16sp"
+                  android:gravity="center"
+                  android:padding="12dp"
+                  android:background="#333333" />
+          </LinearLayout>
+          EOF
+
+          # === KOTLIN SOURCE FILES ===
+          # Tạo từng file lớp một (sử dụng heredoc)
+          # BatteryApp.kt
+          cat > app/src/main/java/com/example/batterycare/BatteryApp.kt << 'EOF'
+          package com.example.batterycare
+          import android.app.Application
+          class BatteryApp : Application() {
+              val database by lazy { BatteryDatabase.getInstance(this) }
+              val repository by lazy { BatteryRepository(database.batteryDao()) }
+          }
+          EOF
+
+          # BatteryData.kt
+          cat > app/src/main/java/com/example/batterycare/BatteryData.kt << 'EOF'
+          package com.example.batterycare
+          data class BatteryData(
+              val timestamp: Long = 0L,
+              val levelPercent: Int = 0,
+              val voltage: Float = 0f,
+              val temperature: Float = 0f,
+              val status: Int = 0,
+              val health: String = "Không rõ",
+              val technology: String = "Không rõ",
+              val currentNow: Int = 0
+          )
+          EOF
+
+          # BatteryUtil.kt
+          cat > app/src/main/java/com/example/batterycare/BatteryUtil.kt << 'EOF'
+          package com.example.batterycare
+
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.os.BatteryManager
+
+          object BatteryUtil {
+              fun getBatteryData(context: Context): BatteryData {
+                  val bm = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+                  val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                  val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+                  val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: 100
+                  val voltage = intent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
+                  val temperature = (intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0) / 10f
+                  val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN) ?: BatteryManager.BATTERY_STATUS_UNKNOWN
+                  val health = intent?.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN) ?: BatteryManager.BATTERY_HEALTH_UNKNOWN
+                  val technology = intent?.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY)
+                  val current = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
+                  val levelPercent = if (scale > 0) (level * 100) / scale else level
+                  val healthStr = when (health) {
+                      BatteryManager.BATTERY_HEALTH_COLD -> "Lạnh"
+                      BatteryManager.BATTERY_HEALTH_DEAD -> "Chết"
+                      BatteryManager.BATTERY_HEALTH_GOOD -> "Tốt"
+                      BatteryManager.BATTERY_HEALTH_OVERHEAT -> "Quá nhiệt"
+                      BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE -> "Quá áp"
+                      BatteryManager.BATTERY_HEALTH_UNKNOWN -> "Không rõ"
+                      BatteryManager.BATTERY_HEALTH_UNSPECIFIED_FAILURE -> "Lỗi"
+                      else -> "Không xác định"
+                  }
+                  return BatteryData(
+                      timestamp = System.currentTimeMillis(),
+                      levelPercent = levelPercent,
+                      voltage = voltage / 1000f,
+                      temperature = temperature,
+                      status = status,
+                      health = healthStr,
+                      technology = technology ?: "Không rõ",
+                      currentNow = if (current == Int.MIN_VALUE) 0 else current / 1000
+                  )
+              }
+          }
+          EOF
+
+          # Các file còn lại (rút gọn một số file để đảm bảo build được)
+          cat > app/src/main/java/com/example/batterycare/BatterySession.kt << 'EOF'
+          package com.example.batterycare
+          import androidx.room.Entity
+          import androidx.room.PrimaryKey
+          @Entity(tableName = "sessions")
+          data class BatterySession(
+              @PrimaryKey(autoGenerate = true) val id: Long = 0,
+              val startTime: Long = 0L,
+              val endTime: Long? = null,
+              val maxTemp: Float = 0f,
+              val avgCurrent: Int = 0,
+              val finalHealth: String = "Tốt"
+          )
+          EOF
+
+          cat > app/src/main/java/com/example/batterycare/BatteryDao.kt << 'EOF'
+          package com.example.batterycare
+          import androidx.room.*
+          import kotlinx.coroutines.flow.Flow
+          @Dao
+          interface BatteryDao {
+              @Insert(onConflict = OnConflictStrategy.REPLACE)
+              suspend fun insertSession(session: BatterySession)
+              @Update
+              suspend fun updateSession(session: BatterySession)
+              @Query("SELECT * FROM sessions ORDER BY startTime DESC LIMIT 10")
+              fun getRecentSessions(): Flow<List<BatterySession>>
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/batterycare/BatteryDatabase.kt << 'EOF'
+          package com.example.batterycare
+          import android.content.Context
+          import androidx.room.Database
+          import androidx.room.Room
+          import androidx.room.RoomDatabase
+          @Database(entities = [BatterySession::class], version = 1, exportSchema = false)
+          abstract class BatteryDatabase : RoomDatabase() {
+              abstract fun batteryDao(): BatteryDao
+              companion object {
+                  @Volatile private var INSTANCE: BatteryDatabase? = null
+                  fun getInstance(context: Context): BatteryDatabase {
+                      return INSTANCE ?: synchronized(this) {
+                          val instance = Room.databaseBuilder(context.applicationContext, BatteryDatabase::class.java, "battery_history").build()
+                          INSTANCE = instance
+                          instance
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/batterycare/BatteryRepository.kt << 'EOF'
+          package com.example.batterycare
+          import kotlinx.coroutines.flow.Flow
+          class BatteryRepository(private val dao: BatteryDao) {
+              val recentSessions: Flow<List<BatterySession>> = dao.getRecentSessions()
+              suspend fun insertSession(session: BatterySession) = dao.insertSession(session)
+              suspend fun updateSession(session: BatterySession) = dao.updateSession(session)
+          }
+          EOF
+
+          # Các file chức năng (tối thiểu)
+          cat > app/src/main/java/com/example/batterycare/ReferenceChargeCurve.kt << 'EOF'
+          package com.example.batterycare
+          import android.content.Context
+          import org.json.JSONObject
+          object ReferenceChargeCurve {
+              fun loadCurve(context: Context): Map<Int, Long> {
+                  val json = context.assets.open("reference_curve.json").bufferedReader().use { it.readText() }
+                  val jsonObject = JSONObject(json)
+                  val map = mutableMapOf<Int, Long>()
+                  jsonObject.keys().forEach { key -> map[key.toInt()] = jsonObject.getLong(key) }
+                  return map.toSortedMap()
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/batterycare/ChargeCurveComparator.kt << 'EOF'
+          package com.example.batterycare
+          object ChargeCurveComparator {
+              fun compare(actual: List<Pair<Int, Long>>, reference: Map<Int, Long>): String {
+                  if (actual.isEmpty()) return "Chưa đủ dữ liệu"
+                  val deviations = actual.mapNotNull { (lvl, t) -> reference[lvl]?.let { t - it } }
+                  if (deviations.isEmpty()) return "Không có dữ liệu đối chiếu"
+                  val avg = deviations.average()
+                  return when {
+                      avg < -300 -> "Sạc nhanh hơn bình thường"
+                      avg in -300.0..300.0 -> "Sạc bình thường"
+                      avg > 300 -> "Sạc chậm, kiểm tra cáp/nguồn"
+                      else -> "Không xác định"
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/batterycare/BatteryStateAnalyzer.kt << 'EOF'
+          package com.example.batterycare
+          object BatteryStateAnalyzer {
+              fun diagnose(data: BatteryData, curveAnalysis: String): String {
+                  val sb = StringBuilder()
+                  if (data.health != "Tốt") sb.append("Tình trạng pin: ${data.health}. ")
+                  if (data.temperature > 45) sb.append("Nhiệt độ cao (>45°C), rút sạc! ")
+                  if (data.voltage > 4.4f) sb.append("Điện áp quá cao! ")
+                  if (curveAnalysis.isNotEmpty()) sb.append(curveAnalysis)
+                  if (sb.isEmpty()) sb.append("Pin hoạt động tốt.")
+                  return sb.toString()
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/batterycare/NotificationHelper.kt << 'EOF'
+          package com.example.batterycare
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.content.Context
+          import androidx.core.app.NotificationCompat
+          object NotificationHelper {
+              const val CHANNEL_ID = "battery_monitor"
+              fun createChannel(context: Context) {
+                  val channel = NotificationChannel(CHANNEL_ID, "Giám sát pin", NotificationManager.IMPORTANCE_DEFAULT)
+                  val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                  nm.createNotificationChannel(channel)
+              }
+              fun showNotification(context: Context, title: String, content: String) {
+                  val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+                      .setSmallIcon(R.drawable.ic_battery)
+                      .setContentTitle(title)
+                      .setContentText(content)
+                      .setAutoCancel(true)
+                      .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                      .build()
+                  val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                  nm.notify(System.currentTimeMillis().toInt(), notification)
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/batterycare/SoundPlayer.kt << 'EOF'
+          package com.example.batterycare
+          import android.content.Context
+          import android.media.RingtoneManager
+          object SoundPlayer {
+              fun playSound(context: Context, soundResId: Int) {
+                  try {
+                      val notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                      val r = RingtoneManager.getRingtone(context, notification)
+                      r.play()
+                  } catch (_: Exception) {}
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/batterycare/CheckpointLogger.kt << 'EOF'
+          package com.example.batterycare
+          import android.content.Context
+          import java.io.File
+          object CheckpointLogger {
+              private const val FILE_NAME = "checkpoint.log"
+              private var logFile: File? = null
+              fun init(context: Context) { logFile = File(context.filesDir, FILE_NAME) }
+              fun log(event: String) { logFile?.appendText("${System.currentTimeMillis()}: $event\n") }
+              fun lastCheckpoint(): String? = logFile?.readLines()?.lastOrNull()
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/batterycare/PermissionHelper.kt << 'EOF'
+          package com.example.batterycare
+          import android.Manifest
+          import android.content.pm.PackageManager
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.app.ActivityCompat
+          import androidx.core.content.ContextCompat
+          object PermissionHelper {
+              fun requestPermissions(activity: AppCompatActivity) {
+                  val perms = arrayOf(Manifest.permission.POST_NOTIFICATIONS, Manifest.permission.FOREGROUND_SERVICE)
+                  val ungranted = perms.filter { ContextCompat.checkSelfPermission(activity, it) != PackageManager.PERMISSION_GRANTED }
+                  if (ungranted.isNotEmpty()) ActivityCompat.requestPermissions(activity, ungranted.toTypedArray(), 100)
+              }
+          }
+          EOF
+
+          # BatteryMonitorService (foreground service) - phiên bản rút gọn nhưng đủ build
+          cat > app/src/main/java/com/example/batterycare/BatteryMonitorService.kt << 'EOF'
+          package com.example.batterycare
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Intent
+          import android.os.IBinder
+          import androidx.core.app.NotificationCompat
+          import kotlinx.coroutines.*
+
+          class BatteryMonitorService : Service() {
+              override fun onCreate() {
+                  super.onCreate()
+                  NotificationHelper.createChannel(this)
+                  startForeground(1, NotificationCompat.Builder(this, NotificationHelper.CHANNEL_ID)
+                      .setSmallIcon(R.drawable.ic_battery)
+                      .setContentTitle("BatteryCare")
+                      .setContentText("Đang giám sát pin")
+                      .setOngoing(true)
+                      .build())
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  val batteryIntent = intent?.getParcelableExtra<Intent>("battery_intent")
+                  if (batteryIntent != null) {
+                      val data = BatteryUtil.getBatteryData(this)
+                      // Đơn giản: chỉ hiển thị thông báo nếu có vấn đề
+                      if (data.temperature > 45) {
+                          NotificationHelper.showNotification(this, "Cảnh báo", "Nhiệt độ pin cao: ${data.temperature}°C")
+                      }
+                  }
+                  return START_STICKY
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/batterycare/BatteryReceiver.kt << 'EOF'
+          package com.example.batterycare
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          class BatteryReceiver : BroadcastReceiver() {
+              override fun onReceive(context: Context, intent: Intent?) {
+                  if (intent?.action == Intent.ACTION_BATTERY_CHANGED) {
+                      val serviceIntent = Intent(context, BatteryMonitorService::class.java).apply { putExtra("battery_intent", intent) }
+                      context.startForegroundService(serviceIntent)
+                  }
+              }
+          }
+          EOF
+
+          # MainViewModel (cực kỳ đơn giản)
+          cat > app/src/main/java/com/example/batterycare/MainViewModel.kt << 'EOF'
+          package com.example.batterycare
+          import androidx.lifecycle.LiveData
+          import androidx.lifecycle.MutableLiveData
+          import androidx.lifecycle.ViewModel
+          class MainViewModel : ViewModel() {
+              private val _batteryData = MutableLiveData<BatteryData>()
+              val batteryData: LiveData<BatteryData> = _batteryData
+              fun updateData(data: BatteryData) { _batteryData.value = data }
+          }
+          EOF
+
+          # BatteryChartView (custom view)
+          cat > app/src/main/java/com/example/batterycare/BatteryChartView.kt << 'EOF'
+          package com.example.batterycare
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.DashPathEffect
+          import android.graphics.Paint
+          import android.util.AttributeSet
+          import android.view.View
+          class BatteryChartView @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null, defStyle: Int = 0) : View(context, attrs, defStyle) {
+              private val actual = mutableListOf<Pair<Int, Long>>()
+              private var reference = mapOf<Int, Long>()
+              fun updateActual(level: Int, time: Long) {
+                  if (actual.size > 100) actual.removeAt(0)
+                  actual.add(level to time)
+                  invalidate()
+              }
+              fun setReference(ref: Map<Int, Long>) { reference = ref; invalidate() }
+              override fun onDraw(canvas: Canvas) {
+                  super.onDraw(canvas)
+                  if (width == 0 || height == 0 || actual.isEmpty()) return
+                  val maxTime = actual.maxOf { it.second } + 1000L
+                  val paintAct = Paint().apply { color = Color.GREEN; strokeWidth = 4f; style = Paint.Style.STROKE }
+                  val paintRef = Paint().apply { color = Color.GRAY; strokeWidth = 4f; style = Paint.Style.STROKE; pathEffect = DashPathEffect(floatArrayOf(10f,10f),0f) }
+                  // Vẽ tham chiếu
+                  if (reference.isNotEmpty()) {
+                      val sorted = reference.toSortedMap()
+                      var first = true
+                      var lastX = 0f; var lastY = 0f
+                      for ((lvl, t) in sorted) {
+                          val x = (lvl/100f) * width
+                          val y = height - (t.toFloat()/maxTime) * height
+                          if (first) { first = false; lastX = x; lastY = y }
+                          else { canvas.drawLine(lastX, lastY, x, y, paintRef); lastX = x; lastY = y }
+                      }
+                  }
+                  // Vẽ thực tế
+                  var firstA = true
+                  var lx = 0f; var ly = 0f
+                  for ((lvl, t) in actual) {
+                      val x = (lvl/100f) * width
+                      val y = height - (t.toFloat()/maxTime) * height
+                      if (firstA) { firstA = false; lx = x; ly = y }
+                      else { canvas.drawLine(lx, ly, x, y, paintAct); lx = x; ly = y }
+                  }
+              }
+          }
+          EOF
+
+          # PopupInfoDialog
+          cat > app/src/main/java/com/example/batterycare/PopupInfoDialog.kt << 'EOF'
+          package com.example.batterycare
+          import android.app.Dialog
+          import android.content.Context
+          import android.os.Bundle
+          import android.widget.TextView
+          class PopupInfoDialog(context: Context, private val title: String, private val message: String) : Dialog(context) {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.dialog_info)
+                  findViewById<TextView>(R.id.textTitle).text = title
+                  findViewById<TextView>(R.id.textMessage).text = message
+                  findViewById<TextView>(R.id.buttonClose).setOnClickListener { dismiss() }
+              }
+          }
+          EOF
+
+          # MainActivity (chỉ hiển thị giao diện)
+          cat > app/src/main/java/com/example/batterycare/MainActivity.kt << 'EOF'
+          package com.example.batterycare
+          import android.os.Bundle
+          import android.view.WindowManager
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.lifecycle.ViewModelProvider
+          import com.example.batterycare.databinding.ActivityMainBinding
+          class MainActivity : AppCompatActivity() {
+              private lateinit var binding: ActivityMainBinding
+              private lateinit var viewModel: MainViewModel
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+                  binding = ActivityMainBinding.inflate(layoutInflater)
+                  setContentView(binding.root)
+                  viewModel = ViewModelProvider(this)[MainViewModel::class.java]
+                  viewModel.batteryData.observe(this) { data ->
+                      binding.textLevel.text = "${data.levelPercent}%"
+                      binding.textVoltage.text = "V: %.1fV".format(data.voltage)
+                      binding.textTemp.text = "Nhiệt độ: %.1f°C".format(data.temperature)
+                      binding.textHealth.text = data.health
+                      binding.chartView.updateActual(data.levelPercent, data.timestamp)
+                  }
+                  binding.textVoltage.setOnClickListener { PopupInfoDialog(this, "Điện áp pin", getString(R.string.info_voltage)).show() }
+                  binding.textTemp.setOnClickListener { PopupInfoDialog(this, "Nhiệt độ pin", getString(R.string.info_temperature)).show() }
+                  binding.textHealth.setOnClickListener { PopupInfoDialog(this, "Tình trạng pin", getString(R.string.info_health)).show() }
+              }
+          }
+          EOF
+
+          # Asset file
+          echo '{"0":0,"10":300,"20":600,"30":900,"40":1200,"50":1500,"60":1800,"70":2100,"80":2400,"90":2700,"100":3000}' > app/src/main/assets/reference_curve.json
+
+      - name: Build APK
+        run: |
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BatteryCare-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
